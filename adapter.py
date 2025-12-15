@@ -1,20 +1,22 @@
 """
 Adapter between the Phase 1 GUI and the Phase 2 object-oriented simulation.
 
-- Reuse phase1.io_mod for loading and generating data
-- Keep this file small, readable, and exam-friendly
-- Do NOT reimplement CSV or random generation logic
+This module translates between:
+- Phase 1 style dictionaries (used by the GUI), and
+- Phase 2 objects (used by the simulation engine).
+
+The adapter owns a single global DeliverySimulation instance.
 """
 
 from __future__ import annotations
 from typing import Dict, List, Tuple, Any
 
-# --- reuse Phase 1 helpers ---
+# Reuse Phase 1 helpers
 from phase1 import io_mod
 
-# --- Phase 2 core ---
-from .DeliverySimulation import DeliverySimulation
-from .DispatchPolicy import NearestNeighborPolicy
+# Phase 2 core
+from .delivery_simulation import DeliverySimulation
+from .dispatch_policies import NearestNeighborPolicy
 from .driver import Driver
 from .request import Request
 from .point import Point
@@ -26,6 +28,7 @@ from .driver_behaviour import GreedyDistanceBehaviour
 # --------------------------------------------------
 # Global simulation instance (managed by adapter)
 # --------------------------------------------------
+
 _SIM: DeliverySimulation | None = None
 
 
@@ -35,30 +38,18 @@ _SIM: DeliverySimulation | None = None
 
 def load_drivers(path: str) -> List[Dict[str, Any]]:
     """
-    Load drivers from a file using Phase 1 logic.
+    Load drivers from file using Phase 1 logic.
 
-    Parameters
-    ----------
-    path : str
-        Path to the driver CSV file.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        List of driver dictionaries (Phase 1 format).
-
-    >>> isinstance(load_drivers, object)
-    True
+    This function is required by the GUI interface.
     """
     return io_mod.load_drivers(path)
 
 
 def load_requests(path: str) -> List[Dict[str, Any]]:
     """
-    Load requests from a file using Phase 1 logic.
+    Load requests from file using Phase 1 logic.
 
-    >>> isinstance(load_requests, object)
-    True
+    This function is required by the GUI interface.
     """
     return io_mod.load_requests(path)
 
@@ -67,22 +58,22 @@ def generate_drivers(n: int, width: int, height: int) -> List[Dict[str, Any]]:
     """
     Generate random drivers using Phase 1 logic.
 
-    >>> isinstance(generate_drivers, object)
-    True
+    This function is required by the GUI interface.
     """
     return io_mod.generate_drivers(n, width, height)
 
 
-def generate_requests(start_t: int,
-                      out_list: List[Dict[str, Any]],
-                      req_rate: float,
-                      width: int,
-                      height: int) -> None:
+def generate_requests(
+    start_t: int,
+    out_list: List[Dict[str, Any]],
+    req_rate: float,
+    width: int,
+    height: int,
+) -> None:
     """
     Generate requests over time using Phase 1 logic.
 
-    >>> isinstance(generate_requests, object)
-    True
+    New requests are appended to the given list.
     """
     io_mod.generate_requests(start_t, out_list, req_rate, width, height)
 
@@ -91,56 +82,47 @@ def generate_requests(start_t: int,
 # Adapter: dicts -> objects
 # --------------------------------------------------
 
-def init_state(drivers: List[Dict],
-               requests: List[Dict],
-               timeout: int,
-               req_rate: float,
-               width: int,
-               height: int) -> Dict[str, Any]:
+def init_state(
+    drivers: List[Dict],
+    requests: List[Dict],
+    timeout: int,
+    req_rate: float,
+    width: int,
+    height: int,
+) -> Dict[str, Any]:
     """
-    Initialize the Phase 2 simulation from Phase 1-style dictionaries.
+    Create and initialize a Phase 2 simulation.
 
-    This function:
-    - Converts driver dicts into Driver objects
-    - Converts request dicts into Request objects
-    - Creates policies and generators
-    - Creates and stores a global DeliverySimulation
-
-    Returns
-    -------
-    Dict[str, Any]
-        Initial GUI-compatible snapshot of the simulation.
-
-    >>> isinstance(init_state, object)
-    True
+    Converts Phase 1-style dictionaries into Phase 2 objects
+    and stores the simulation globally.
     """
     global _SIM
 
-    # 1) Build Driver objects
+    # Build Driver objects
     driver_objs: List[Driver] = []
     for d in drivers:
         driver_objs.append(
             Driver(
-                id=d["id"],
+                did=d["id"],                      # GUI id → did
                 position=Point(d["x"], d["y"]),
                 speed=d.get("speed", 1.0),
                 behaviour=GreedyDistanceBehaviour(max_distance=10_000),
             )
         )
 
-    # 2) Build Request objects (scheduled)
+    # Build Request objects
     req_objs: List[Request] = []
     for r in requests:
         req_objs.append(
             Request(
-                id=r["id"],
+                rid=r["id"],                     # GUI id → rid
                 pickup=Point(r["px"], r["py"]),
                 dropoff=Point(r["dx"], r["dy"]),
                 creation_time=r["t"],
             )
         )
 
-    # 3) Generator + policies (simple defaults)
+    # Create request generator
     generator = RequestGenerator(
         rate=req_rate,
         width=width,
@@ -152,7 +134,6 @@ def init_state(drivers: List[Dict],
     dispatch_policy = NearestNeighborPolicy()
     mutation_rule = MutationRule()
 
-    # 4) Create simulation
     _SIM = DeliverySimulation(
         drivers=driver_objs,
         dispatch_policy=dispatch_policy,
@@ -170,21 +151,9 @@ def init_state(drivers: List[Dict],
 
 def simulate_step(state: Dict) -> Tuple[Dict, Dict]:
     """
-    Advance the simulation by exactly one time step (tick).
+    Advance the simulation by one time step.
 
-    Returns
-    -------
-    Tuple[Dict, Dict]
-        - Snapshot (GUI format)
-        - Metrics dictionary
-
-    Raises
-    ------
-    RuntimeError
-        If the simulation has not been initialized.
-
-    >>> isinstance(simulate_step, object)
-    True
+    Returns the updated state snapshot and a metrics dictionary.
     """
     if _SIM is None:
         raise RuntimeError("Simulation not initialised")
@@ -202,23 +171,14 @@ def simulate_step(state: Dict) -> Tuple[Dict, Dict]:
 
 
 # --------------------------------------------------
-# Adapter: objects -> dicts (GUI format)
+# Adapter: objects -> dicts
 # --------------------------------------------------
 
 def _snapshot() -> Dict[str, Any]:
     """
-    Convert the internal DeliverySimulation state into
-    a Phase 1 / GUI-compatible dictionary.
+    Convert the internal simulation state into GUI format.
 
-    This function hides all Phase 2 objects from the GUI.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Snapshot dictionary in GUI format.
-
-    >>> isinstance(_snapshot, object)
-    True
+    This hides all Phase 2 objects from the GUI.
     """
     assert _SIM is not None
     snap = _SIM.get_snapshot()
@@ -228,13 +188,13 @@ def _snapshot() -> Dict[str, Any]:
         "drivers": snap["drivers"],
         "pending": [
             {
-                "id": r.id,
+                "id": r.rid,                    # rid → GUI id
                 "px": r.pickup.x,
                 "py": r.pickup.y,
                 "dx": r.dropoff.x,
                 "dy": r.dropoff.y,
                 "status": r.status.lower(),
-                "driver_id": r.assigned_driver_id,
+                "driver_id": r.assigned_driver_id,  # did, but GUI kalder det driver_id
                 "t": r.creation_time,
             }
             for r in _SIM.requests
