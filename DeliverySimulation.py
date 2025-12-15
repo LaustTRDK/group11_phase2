@@ -1,27 +1,20 @@
 from __future__ import annotations
-from typing import List, Dict, Tuple
+
+from typing import List, Dict
 
 from .request import Request
 from .driver import Driver
 from .dispatch_policies import DispatchPolicy
 from .request_generator import RequestGenerator
 from .mutation_rules import MutationRule
+from .offer import Offer
 
 
 class DeliverySimulation:
     """
-    Orchestrates the entire delivery simulation for Phase 2.
+    Main simulation engine.
 
-    The class follows the simulation pipeline described in the assignment:
-      1. Request generation
-      2. Request expiration
-      3. Dispatch (offer proposals)
-      4. Driver accept / reject
-      5. Conflict resolution
-      6. Assignment
-      7. Movement, pickup, and dropoff
-      8. Driver mutation
-
+    Controls time, drivers, requests, and statistics.
     """
 
     def __init__(
@@ -34,28 +27,11 @@ class DeliverySimulation:
         *,
         base_fee: float = 10.0,
         distance_fee: float = 1.0,
-    ):
+    ) -> None:
         """
-        Initialize the simulation engine.
-
-        Parameters
-        ----------
-        drivers : list[Driver]
-            All drivers participating in the simulation.
-        dispatch_policy : DispatchPolicy
-            Policy used to propose driver-request matches.
-        request_generator : RequestGenerator
-            Object responsible for generating new requests.
-        mutation_rule : MutationRule
-            Rule that may change driver behaviour over time.
-        timeout : int
-            Maximum waiting time before a request expires.
-        base_fee : float, optional
-            Fixed earnings per completed request.
-        distance_fee : float, optional
-            Earnings per unit distance from pickup to dropoff.
+        Create a simulation instance.
         """
-        self.time: int = 0
+        self.time = 0
         self.drivers = drivers
         self.requests: List[Request] = []
 
@@ -64,66 +40,44 @@ class DeliverySimulation:
         self.mutation_rule = mutation_rule
         self.timeout = timeout
 
-        # Statistics
         self.served_count = 0
         self.expired_count = 0
         self.wait_times: List[int] = []
 
-        # Earnings model
         self.base_fee = base_fee
         self.distance_fee = distance_fee
 
-        # Ensure all drivers have an earnings attribute
         for d in self.drivers:
-            if not hasattr(d, "earnings"):
-                d.earnings = 0.0
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+            if not hasattr(d, "total_earnings"):
+                d.total_earnings = 0.0
 
     def tick(self) -> None:
         """
-        Advance the simulation by one discrete time step.
-
-        This method implements the full simulation pipeline.
+        Advance the simulation by one time step.
         """
         self.time += 1
 
-        # 1. Generate new requests
         new_requests = self.request_generator.maybe_generate(self.time)
         self.requests.extend(new_requests)
 
-        # 2. Expire old requests
         self._expire_old_requests()
 
-        # 3. Propose assignments
         offers = self.dispatch_policy.assign(
             self.drivers,
             self._active_requests(),
             self.time,
         )
 
-        # 4. Ask drivers to accept or reject
         accepted = self._filter_acceptances(offers)
-
-        # 5. Resolve conflicts
         assignments = self._resolve_conflicts(accepted)
-
-        # 6. Apply assignments
         self._apply_assignments(assignments)
 
-        # 7. Move drivers and handle events
         self._move_drivers_and_handle_events()
-
-        # 8. Apply mutation rules
         self._apply_mutations()
 
     def get_snapshot(self) -> Dict:
         """
-        Return a snapshot of the current simulation state.
-
-        The returned dictionary is intended for use by the GUI adapter.
+        Return current state in GUI-friendly format.
         """
         return {
             "time": self.time,
@@ -132,11 +86,11 @@ class DeliverySimulation:
             "avg_wait": self._avg_wait(),
             "drivers": [
                 {
-                    "id": d.id,
+                    "id": d.did,
                     "x": d.position.x,
                     "y": d.position.y,
                     "status": d.status,
-                    "earnings": d.earnings,
+                    "earnings": d.total_earnings,
                 }
                 for d in self.drivers
             ],
@@ -152,88 +106,112 @@ class DeliverySimulation:
             ],
         }
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _active_requests(self) -> List[Request]:
         """
-        Return all requests that are still active.
+        Return requests that are not finished.
 
-        A request is considered active if it is not delivered or expired.
+        --- DOCTEST ---
+        >>> class R:
+        ...     def __init__(self, active): self._a = active
+        ...     def is_active(self): return self._a
+        >>> sim = DeliverySimulation.__new__(DeliverySimulation)
+        >>> sim.requests = [R(True), R(False), R(True)]
+        >>> len(sim._active_requests())
+        2
         """
         return [r for r in self.requests if r.is_active()]
 
     def _expire_old_requests(self) -> None:
         """
-        Mark requests as expired if they waited longer than the timeout.
+        Expire requests that waited longer than timeout.
+
+        --- DOCTEST ---
+        >>> class R:
+        ...     def __init__(self, t, status="WAITING"):
+        ...         self.creation_time = t
+        ...         self.status = status
+        ...     def is_active(self): return True
+        ...     def mark_expired(self, t): self.status = "EXPIRED"
+        >>> sim = DeliverySimulation.__new__(DeliverySimulation)
+        >>> sim.time = 10
+        >>> sim.timeout = 3
+        >>> sim.expired_count = 0
+        >>> r = R(0)
+        >>> sim.requests = [r]
+        >>> sim._expire_old_requests()
+        >>> r.status
+        'EXPIRED'
         """
         for r in self._active_requests():
             if self.time - r.creation_time > self.timeout and r.status != "PICKED":
                 r.mark_expired(self.time)
                 self.expired_count += 1
 
-    def _filter_acceptances(
-        self,
-        offers: List[Tuple[Driver, Request]],
-    ) -> List[Tuple[Driver, Request]]:
+    def _filter_acceptances(self, offers: List[Offer]) -> List[Offer]:
         """
-        Ask each driver whether they accept the offered request.
+        Keep only offers accepted by drivers.
+
+        --- DOCTEST ---
+        >>> class B:
+        ...     def decide(self, d, o, t): return True
+        >>> class D:
+        ...     def __init__(self): self.behaviour = B()
+        >>> class O:
+        ...     def __init__(self): self.driver = D()
+        >>> sim = DeliverySimulation.__new__(DeliverySimulation)
+        >>> sim.time = 0
+        >>> len(sim._filter_acceptances([O(), O()]))
+        2
         """
         accepted = []
-        for driver, req in offers:
-            if driver.behaviour.decide(driver, req, self.time):
-                accepted.append((driver, req))
+        for offer in offers:
+            if offer.driver.behaviour.decide(offer.driver, offer, self.time):
+                accepted.append(offer)
         return accepted
 
-    def _resolve_conflicts(
-        self,
-        accepted: List[Tuple[Driver, Request]],
-    ) -> List[Tuple[Driver, Request]]:
+    def _resolve_conflicts(self, accepted: List[Offer]) -> List[Offer]:
         """
-        Resolve conflicts where multiple drivers accepted the same request.
+        Ensure each request is used once.
 
-        The rule is simple: the first accepting driver wins.
-
-        Doctest
-        -------
-        >>> class D: pass
+        --- DOCTEST ---
         >>> class R:
-        ...     def __init__(self, id): self.id = id
-        >>> d1, d2 = D(), D()
+        ...     def __init__(self, i): self.rid = i
+        >>> class O:
+        ...     def __init__(self, r): self.request = r
+        >>> sim = DeliverySimulation.__new__(DeliverySimulation)
         >>> r = R(1)
-        >>> sim = DeliverySimulation([], None, None, None, 10)
-        >>> result = sim._resolve_conflicts([(d1, r), (d2, r)])
-        >>> len(result)
+        >>> len(sim._resolve_conflicts([O(r), O(r)]))
         1
         """
-        assigned_requests = set()
-        final = []
+        used = set()
+        result = []
 
-        for driver, req in accepted:
-            if req.id in assigned_requests:
+        for offer in accepted:
+            rid = offer.request.rid
+            if rid in used:
                 continue
-            assigned_requests.add(req.id)
-            final.append((driver, req))
+            used.add(rid)
+            result.append(offer)
 
-        return final
+        return result
 
-    def _apply_assignments(
-        self,
-        assignments: List[Tuple[Driver, Request]],
-    ) -> None:
+    def _apply_assignments(self, assignments: List[Offer]) -> None:
         """
-        Assign requests to drivers.
+        Assign drivers to requests.
         """
-        for driver, req in assignments:
+        for offer in assignments:
+            driver = offer.driver
+            req = offer.request
+
             if driver.status != "IDLE" or req.status != "WAITING":
                 continue
+
             driver.assign_request(req, self.time)
-            req.mark_assigned(driver.id)
+            req.mark_assigned(driver.did)
 
     def _move_drivers_and_handle_events(self) -> None:
         """
-        Move drivers and process pickup and dropoff events.
+        Move drivers and handle pickup/dropoff.
         """
         for d in self.drivers:
             req = d.current_request
@@ -254,55 +232,56 @@ class DeliverySimulation:
                 self.served_count += 1
                 self.wait_times.append(self.time - req.creation_time)
 
-                reward = self._compute_earnings(req)
-                d.earnings += reward
-
+                d.total_earnings += self._compute_earnings(req)
                 d.current_request = None
 
     def _apply_mutations(self) -> None:
         """
-        Apply mutation rules to all drivers.
+        Possibly change driver behaviour.
         """
         for d in self.drivers:
             self.mutation_rule.maybe_mutate(d, self.time)
 
     def _compute_earnings(self, req: Request) -> float:
         """
-        Compute earnings for a completed request.
+        Compute reward for a delivered request.
 
-        The earnings model is intentionally simple:
-        a fixed base fee plus a distance-based component.
-
-        Doctest
-        -------
+        --- DOCTEST ---
         >>> class P:
         ...     def __init__(self, x, y): self.x, self.y = x, y
-        ...     def distance_to(self, other):
-        ...         dx = self.x - other.x
-        ...         dy = self.y - other.y
-        ...         return (dx*dx + dy*dy) ** 0.5
+        ...     def distance_to(self, o):
+        ...         return ((self.x-o.x)**2 + (self.y-o.y)**2) ** 0.5
         >>> class R:
         ...     def __init__(self):
         ...         self.pickup = P(0, 0)
         ...         self.dropoff = P(3, 4)
-        >>> sim = DeliverySimulation([], None, None, None, 10, base_fee=10, distance_fee=1)
+        >>> sim = DeliverySimulation.__new__(DeliverySimulation)
+        >>> sim.base_fee = 10.0
+        >>> sim.distance_fee = 2.0
         >>> sim._compute_earnings(R())
-        15.0
+        20.0
         """
         distance = req.pickup.distance_to(req.dropoff)
         return self.base_fee + self.distance_fee * distance
 
     def _avg_wait(self) -> float:
         """
-        Compute the average waiting time of served requests.
+        Return average waiting time.
 
-        Doctest
-        -------
-        >>> sim = DeliverySimulation([], None, None, None, 10)
-        >>> sim.wait_times = [2, 4, 6]
+        --- DOCTEST ---
+        >>> sim = DeliverySimulation.__new__(DeliverySimulation)
+        >>> sim.wait_times = []
         >>> sim._avg_wait()
-        4.0
+        0.0
+        >>> sim.wait_times = [1, 2, 3]
+        >>> sim._avg_wait()
+        2.0
         """
         if not self.wait_times:
             return 0.0
         return sum(self.wait_times) / len(self.wait_times)
+
+
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()
