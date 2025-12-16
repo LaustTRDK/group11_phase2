@@ -1,0 +1,27 @@
+# Ignore metrics collector
+phase2/metrics_collector.py
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test outputs
+.pytest_cache/
+
+# Metrics data files
+metrics.csv
+metrics_*.csv
