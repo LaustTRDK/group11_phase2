@@ -147,6 +147,9 @@ class DeliverySimulation:
     def _expire_old_requests(self) -> None:
         """
         Expire requests that waited longer than timeout.
+        
+        Also releases any drivers that were assigned to expired requests,
+        so they can return to IDLE and pick up new requests.
 
         --- DOCTEST ---
         >>> class R:
@@ -169,6 +172,13 @@ class DeliverySimulation:
             if self.time - r.creation_time > self.timeout and r.status != "PICKED":
                 r.mark_expired(self.time)
                 self.expired_count += 1
+                
+                # Release any driver assigned to this expired request
+                if r.assigned_driver_id > 0:
+                    for driver in self.drivers:
+                        if driver.did == r.assigned_driver_id and driver.current_request == r:
+                            driver.release_expired_request(self.time)
+                            break
 
     def _filter_acceptances(self, offers: List[Offer]) -> List[Offer]:
         """

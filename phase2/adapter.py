@@ -10,6 +10,10 @@ The adapter owns a single global DeliverySimulation instance.
 
 from __future__ import annotations
 from typing import Dict, List, Tuple, Any
+import traceback
+
+# GUI library for error popups
+import dearpygui.dearpygui as dpg
 
 # Reuse Phase 1 helpers
 from phase1 import io_mod
@@ -160,16 +164,70 @@ def simulate_step(state: Dict) -> Tuple[Dict, Dict]:
     if _SIM is None:
         raise RuntimeError("Simulation not initialised")
 
-    _SIM.tick()
-    snapshot = _snapshot()
+    try:
+        _SIM.tick()
+        snapshot = _snapshot()
 
-    metrics = {
-        "served": snapshot["served"],
-        "expired": snapshot["expired"],
-        "avg_wait": snapshot["avg_wait"],
-    }
+        metrics = {
+            "served": snapshot["served"],
+            "expired": snapshot["expired"],
+            "avg_wait": snapshot["avg_wait"],
+        }
 
-    return snapshot, metrics
+        return snapshot, metrics
+    
+    except Exception as e:
+        # Show error popup in GUI
+        _show_error_popup(e)
+        # Re-raise to stop simulation
+        raise
+
+
+# --------------------------------------------------
+# Error handling with GUI popup
+# --------------------------------------------------
+
+def _show_error_popup(exception: Exception) -> None:
+    """
+    Display an error popup in the GUI when simulation fails.
+    
+    This satisfies the Phase 1 feedback requirement for error visualization.
+    """
+    error_msg = f"{type(exception).__name__}: {str(exception)}"
+    error_trace = traceback.format_exc()
+    
+    # Create modal popup window
+    with dpg.window(
+        label="Simulation Error",
+        modal=True,
+        show=True,
+        tag="error_popup",
+        no_resize=True,
+        pos=[400, 250],
+        width=500,
+        height=300,
+    ):
+        dpg.add_text("An error occurred during simulation:", color=(255, 100, 100))
+        dpg.add_separator()
+        dpg.add_text(error_msg, wrap=480)
+        dpg.add_separator()
+        
+        # Show full traceback in collapsing header
+        with dpg.collapsing_header(label="Full Traceback"):
+            dpg.add_input_text(
+                default_value=error_trace,
+                multiline=True,
+                readonly=True,
+                width=480,
+                height=150,
+            )
+        
+        dpg.add_separator()
+        dpg.add_button(
+            label="Close",
+            width=100,
+            callback=lambda: dpg.delete_item("error_popup"),
+        )
 
 
 # --------------------------------------------------

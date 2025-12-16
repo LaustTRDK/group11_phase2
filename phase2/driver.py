@@ -253,6 +253,11 @@ class Driver:
         """
         if self.current_request is None:
             return None
+        
+        # Don't complete pickup if request has expired
+        if self.current_request.status == "EXPIRED":
+            return None
+            
         if self.status == "TO_PICKUP":
             if math.isclose(self.position.x, self.current_request.pickup.x) and math.isclose(self.position.y, self.current_request.pickup.y):
                 self.current_request.mark_picked(time)
@@ -268,6 +273,11 @@ class Driver:
         """
         if self.current_request is None:
             return None
+        
+        # Don't complete dropoff if request has expired
+        if self.current_request.status == "EXPIRED":
+            return None
+            
         if self.status == "TO_DROPOFF":
             if math.isclose(self.position.x, self.current_request.dropoff.x) and math.isclose(self.position.y, self.current_request.dropoff.y):
                 self.current_request.mark_delivered(time)
@@ -276,6 +286,23 @@ class Driver:
                 self.current_request = None
                 self.status = "IDLE"
                 self.idle_stattime = time
+
+    def release_expired_request(self, time: int) -> None:
+        """Release current request when it expires and return driver to IDLE.
+        
+        This method is called when the driver's assigned request has expired
+        (timed out). The driver stops what they're doing and becomes idle again.
+        """
+        if self.current_request is None:
+            return
+        
+        # Log the expiration event in driver's history
+        self.log_event(time, "expired", self.behaviour, self.current_request.rid)
+        
+        # Release the request and return to idle
+        self.current_request = None
+        self.status = "IDLE"
+        self.idle_stattime = time
 
 
     def __str__(self):
@@ -291,16 +318,12 @@ class Driver:
         return f"driver(did = {self.did}, position = {self.position}, speed = {self.speed}, status = {self.status}, current_request = {self.current_request}, history = {self.history}, total_earnings = {self.total_earnings}, idle_time = {self.idle_time}, idle_stattime = {self.idle_stattime})"
 
     def copy_driver(self):
-        return driver(self.did(), 
-                      self.position(), 
-                      self.speed(), 
-                      self.status(), 
-                      self.current_request(), 
-                      self.behaviour(),
-                      self.history(),
-                      self.total_earnings(),
-                      self.idle_time(),
-                      self.idle_stattime())
+        return Driver(self.did, 
+                      self.position, 
+                      self.speed, 
+                      self.status, 
+                      self.current_request, 
+                      self.behaviour)
 
     def update_totalearnings(self, earning: int):
         """This method
